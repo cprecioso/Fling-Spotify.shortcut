@@ -1,0 +1,147 @@
+@Icon rocket
+@Color green
+@ImportQuestion q:ShortcutName question="Shortcut name" defaultValue="Fling Spotify"
+@ImportQuestion q:ConfigFileName question="Shortcut settings file" defaultValue="Fling Spotify.json"
+
+Comment "Setting up variables"
+
+Text q:ShortcutName -> v:ShortcutName
+URLEncode Encode -> mv:EncodedShortcutName
+Text "https://oauth-proxy.netlify.com/?__shortcut=\(mv:EncodedShortcutName)" -> v:CallbackURL
+URLEncode Encode -> v:EncodedCallbackURL
+
+Text q:ConfigFileName -> v:ConfigFile
+
+Comment "Get configuration file"
+
+GetFile service="iCloud Drive" showDocumentPicker=false filePath=v:ConfigFile errorIfNotFound=false -> v:ConfigurationFile
+GetDictionaryFromInput -> v:Configuration
+
+@def @GetConfig ["key"] @{
+    GetVariable v:Configuration
+    GetDictionaryValue get=Value key=@:key
+}
+
+@def @SetConfig ["key", "value"] @{
+    GetVariable v:Configuration
+    SetDictionaryValue @:key @:value -> v:Configuration
+    SaveFile service="iCloud Drive" askWhereToSave=false destinationPath=v:ConfigFile overwriteIfFileExists=true
+}
+
+Comment "If there aren't credentials, guide use through setting up the API keys"
+
+@GetConfig "Spotify Client ID"
+Count Characters
+If input="Is Greater Than" number=0
+Otherwise
+	ShowAlert message="\(v:ShortcutName) hasn't been configured yet. Do you want to do that now?" showCancelButton=true
+	ShowAlert title=Instructions message="You will now be redirected to the Spotify Developer website. Please do the following:\n1. Create a new Client ID.\n2. Go into its settings and paste into the Redirect URIs option.\n3. Copy the Client ID of the newly created application.\n4. Come back." showCancelButton=false
+
+	GetVariable v:CallbackURL
+	CopytoClipboard localOnly=true
+
+	URL "https://developer.spotify.com/dashboard/applications"
+	ShowWebpage enterSafariReader=false
+
+	@SetConfig "Spotify Client ID" s:AskWhenRun
+	@GetConfig "Spotify Client ID"
+	SetVariable v:SpotifyClientID
+
+	ShowAlert message="Great! Remember that if you change the name of the shortcut, you will have to update the Redirect URIs option accordingly. Right now, Spotify will look for a shortcut with the name \(v:ShortcutName). Check that it is correct." showCancelButton=true
+
+	ShowAlert title="Instructions" message="Now I'll take you back to the the same page. This time, find the Client Secret, copy it, and come back" showCancelButton=false
+
+	URL "https://developer.spotify.com/dashboard/applications/\(v:SpotifyClientID)"
+	ShowWebpage enterSafariReader=false
+
+	@SetConfig "Spotify Client Secret" s:AskWhenRun
+End
+
+Comment "Set up API key variables"
+
+@GetConfig "Spotify Client ID"
+SetVariable v:SpotifyClientID
+
+@GetConfig "Spotify Client Secret"
+SetVariable v:SpotifyClientSecret
+
+Text "\(v:SpotifyClientID):\(v:SpotifyClientSecret)"
+Base64Encode Encode lineBreaks="none"
+Text "Basic \(s:ActionInput)" -> v:SpotifyHTTPAuthorization
+
+Comment "Check if we're being called back from the Authorization flow"
+
+GetVariable s:ShortcutInput
+Count Characters
+If input="Is Greater Than" number=0
+    GetVariable s:ShortcutInput
+    URLEncode Decode
+    Base64Encode Decode
+    GetDictionaryFromInput
+    GetDictionaryValue get=Value key="code" -> v:AuthCode
+    GetVariable v:AuthCode
+    Count Characters
+    If input="Is Greater Than" number=0
+        URL "https://accounts.spotify.com/api/token"
+        GetContentsofURL advanced=true method="POST" headers=true headers2={Authorization: v:SpotifyHTTPAuthorization} requestBody="Form" formValues={grant_type: "authorization_code", code: v:AuthCode, redirect_uri: v:CallbackURL}
+        GetDictionaryFromInput
+        GetDictionaryValue get=Value key="refresh_token" -> v:RefreshToken
+        @SetConfig "Spotify Refresh Token" v:RefreshToken
+    Otherwise
+        ShowAlert message="Didn't understand the input" showCancelButton=true
+    End
+End
+
+@GetConfig "Spotify Refresh Token"
+SetVariable v:RefreshToken
+Count Characters
+If input="Is Greater Than" number=0
+Otherwise
+    ShowAlert message="\(v:ShortcutName) has to be connected to your account. Do you want to do that now?" showCancelButton=true
+
+	@GetConfig "Spotify Client ID"
+	SetVariable v:SpotifyClientID
+    URL "https://accounts.spotify.com/authorize?response_type=code&scope=user-read-playback-state%20user-modify-playback-state&client_id=\(v:SpotifyClientID)&redirect_uri=\(v:EncodedCallbackURL)"
+    OpenURLs
+    ExitShortcut
+End
+
+Comment "Refresh token"
+URL "https://accounts.spotify.com/api/token"
+GetContentsofURL advanced=true method="POST" headers=true headers2={Authorization: v:SpotifyHTTPAuthorization} requestBody="Form" formValues={grant_type: "refresh_token", refresh_token: v:RefreshToken}
+GetDictionaryFromInput -> v:TokenResponse
+
+GetDictionaryValue get=Value key="access_token"
+Text "Bearer \(s:ActionInput)" -> v:BearerAuthorization
+
+GetVariable v:TokenResponse
+GetDictionaryValue get=Value key="refresh_token" -> v:RefreshToken
+Count Characters
+If input="Is Greater Than" number=0
+    @SetConfig "Spotify Refresh Token" v:RefreshToken
+End
+
+Comment "Enumerate devices"
+Dictionary -> v:Devices
+
+URL "https://api.spotify.com/v1/me/player/devices"
+GetContentsofURL advanced=true method="GET" headers=true headers2={Authorization: v:BearerAuthorization}
+GetDictionaryFromInput
+GetDictionaryValue get="Value" key="devices"
+RepeatwithEach -> mv:RepeatItem
+    GetVariable v:Devices
+    SetDictionaryValue mv:RepeatItem{as:Dictionary,key:name} mv:RepeatItem{as:Dictionary,key:id} -> v:Devices
+End
+
+Comment "Choose device"
+
+GetVariable v:Devices
+GetDictionaryValue get="All Keys"
+ChoosefromList prompt="Where to?" -> mv:SelectedDeviceName
+
+GetVariable v:Devices
+GetDictionaryValue get="Value" key=mv:SelectedDeviceName -> v:SelectedDevice
+
+Comment "Fling to device"
+URL "https://api.spotify.com/v1/me/player"
+GetContentsofURL advanced=true method="PUT" headers=true headers2={Authorization: v:BearerAuthorization} requestBody="JSON" jSONValues={device_ids:[v:SelectedDevice]}

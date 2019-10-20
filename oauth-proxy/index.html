@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+  </head>
+  <body>
+    <script>
+      try {
+        const pairs = window.location.search
+          .slice(1)
+          .split("&")
+          .map(pair => {
+            const [name, value] = pair.split("=")
+            return [name, decodeURIComponent(value)]
+          })
+
+        const [, shortcutName] = pairs.find(([name]) => name === "__shortcut")
+
+        const shortcutData = pairs
+          .filter(([name]) => name !== "__shortcut")
+          .reduce((obj, [name, value]) => {
+            obj[name] = value
+            return obj
+          }, {})
+
+        const url = `shortcuts://run-shortcut?name=${encodeURIComponent(
+          shortcutName
+        )}&input=text&text=${encodeURIComponent(
+          btoa(JSON.stringify(shortcutData))
+        )}`
+
+        document.write(`<h1><a href="${url}">Tap here!</a></h1>`)
+        window.location.href = url
+      } catch (err) {
+        document.write(`<p>Error</p><pre>${err}</pre>`)
+      }
+    </script>
+  </body>
+</html>
